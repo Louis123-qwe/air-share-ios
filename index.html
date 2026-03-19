@@ -324,28 +324,50 @@ html,body{width:100%;height:100%;overflow:hidden;background:var(--bg);color:var(
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
 <!-- SCREEN 3B: TOUCH FALLBACK (low-end / unsupported devices)      -->
+<!-- Real visible camera preview — required for iOS Safari to work   -->
 <!-- ═══════════════════════════════════════════════════════════════ -->
-<div class="screen hidden" id="touchScreen" style="justify-content:flex-start;padding-top:52px;gap:14px;overflow-y:auto;padding-bottom:80px;">
+<div class="screen hidden" id="touchScreen" style="justify-content:flex-start;padding-top:52px;gap:10px;overflow-y:auto;padding-bottom:80px;">
+
+  <!-- Top bar -->
   <div style="width:100%;max-width:360px;display:flex;align-items:center;justify-content:space-between;">
     <div class="logo" id="touchModeBadge">// SENDER MODE</div>
-    <button onclick="switchRole()" style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:6px 10px;cursor:pointer;font-family:'Share Tech Mono',monospace;font-size:8px;letter-spacing:1px;color:var(--cyan);">SWITCH ROLE</button>
-  </div>
-
-  <!-- Mode badge showing fallback is active -->
-  <div style="width:100%;max-width:360px;">
-    <div class="mode-badge">
-      <span style="font-size:10px;">📱</span>
-      <span class="mode-badge-text">TOUCH MODE — GESTURE UNAVAILABLE ON THIS DEVICE</span>
+    <div style="display:flex;gap:8px;">
+      <button id="btnFlipCamTouch" onclick="flipTouchCamera()" style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:6px 10px;cursor:pointer;font-size:16px;">🔄</button>
+      <button onclick="switchRole()" style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:6px 10px;cursor:pointer;font-family:'Share Tech Mono',monospace;font-size:8px;letter-spacing:1px;color:var(--cyan);">SWITCH ROLE</button>
     </div>
   </div>
 
-  <!-- Sender: big tap-to-send button -->
-  <div id="touchSenderPanel" style="width:100%;max-width:360px;display:flex;flex-direction:column;gap:12px;">
+  <!-- Live camera preview — visible so iOS Safari allows getUserMedia -->
+  <div id="touchVideoWrap" style="position:relative;width:100%;max-width:360px;border:1px solid var(--border);border-radius:12px;overflow:hidden;background:#000;">
+    <video id="touchVideo" autoplay muted playsinline style="width:100%;display:block;transform:scaleX(-1);opacity:0.85;"></video>
+
+    <!-- Sender: tap-to-capture overlay button on top of video -->
+    <div id="touchCaptureOverlay" style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;pointer-events:none;">
+      <div id="touchFlashRing" style="width:72px;height:72px;border-radius:50%;border:2px solid var(--cyan);display:flex;align-items:center;justify-content:center;font-size:28px;opacity:0;transition:opacity .3s;box-shadow:0 0 24px var(--cyan);">📸</div>
+    </div>
+
+    <!-- No-camera fallback message (shown if camera unavailable) -->
+    <div id="touchNoCam" style="display:none;position:absolute;inset:0;flex-direction:column;align-items:center;justify-content:center;gap:8px;background:var(--card);">
+      <div style="font-size:32px;">📷</div>
+      <div style="font-family:'Share Tech Mono',monospace;font-size:9px;letter-spacing:2px;color:var(--dim);text-align:center;">CAMERA UNAVAILABLE<br/>SEND WILL PING WITHOUT IMAGE</div>
+    </div>
+
+    <!-- Mode badge bottom-left -->
+    <div style="position:absolute;bottom:10px;left:10px;pointer-events:none;">
+      <div class="mode-badge" style="margin:0;">
+        <span style="font-size:10px;">📱</span>
+        <span class="mode-badge-text">TOUCH MODE</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Sender panel -->
+  <div id="touchSenderPanel" style="width:100%;max-width:360px;display:flex;flex-direction:column;gap:10px;">
     <button class="touch-btn touch-btn-send" onclick="touchSend()">
       <div class="touch-btn-pulse"></div>
       <div class="touch-btn-ico">📸</div>
       <div class="touch-btn-label">TAP TO SEND</div>
-      <div class="touch-btn-sub">CAPTURES & SENDS SCREENSHOT INSTANTLY</div>
+      <div class="touch-btn-sub">CAPTURES CAMERA & SENDS INSTANTLY</div>
     </button>
     <div class="hud-row">
       <div class="hud-left"><div class="hud-ico">👤</div><div><div class="hud-label">CONNECTED TO</div><div class="hud-sub" id="touchConnectedLabel">—</div></div></div>
@@ -356,8 +378,8 @@ html,body{width:100%;height:100%;overflow:hidden;background:var(--bg);color:var(
     </div>
   </div>
 
-  <!-- Receiver: tap to reveal -->
-  <div id="touchReceiverPanel" style="width:100%;max-width:360px;display:none;flex-direction:column;gap:12px;">
+  <!-- Receiver panel -->
+  <div id="touchReceiverPanel" style="width:100%;max-width:360px;display:none;flex-direction:column;gap:10px;">
     <button class="touch-btn touch-btn-receive" onclick="touchReveal()">
       <div class="touch-btn-ico">🤚</div>
       <div class="touch-btn-label">TAP TO REVEAL</div>
@@ -811,16 +833,27 @@ async function startCamera(){
     .catch(e=>{ diag('MediaPipe start error: '+e.message,'#ff3c5a'); updateDebug('CAM ERROR: '+e.message,'var(--red)'); });
 }
 
-// Visibility change — pause and recover camera when tab hidden/shown
-document.addEventListener('visibilitychange',async()=>{
-  if(!useGestureMode) return;
-  if(document.hidden){
-    diag('Tab hidden — pausing camera','#ffb800');
-    if(mpCamera){try{mpCamera.stop();}catch(e){} mpCamera=null;}
-  } else {
-    diag('Tab visible — restarting camera','#00c8ff');
-    await new Promise(r=>setTimeout(r,500));
+// Visibility change — recover camera when tab returns from background
+// Handles both gesture mode and touch mode
+document.addEventListener('visibilitychange', async()=>{
+  if(document.hidden) {
+    if(useGestureMode){
+      diag('Tab hidden — pausing gesture camera','#ffb800');
+      if(mpCamera){try{mpCamera.stop();}catch(e){} mpCamera=null;}
+    }
+    return;
+  }
+  // Tab visible again
+  await new Promise(r=>setTimeout(r,500));
+  if(useGestureMode){
+    diag('Tab visible — restarting gesture camera','#00c8ff');
     startCamera();
+  } else {
+    // Touch mode — check if stream is dead
+    if(!touchStream || touchStream.getVideoTracks().every(t=>t.readyState==='ended')){
+      diag('Tab visible — restarting touch camera','#00c8ff');
+      startTouchCamera();
+    }
   }
 });
 
@@ -998,21 +1031,34 @@ function touchSend(){
   if(!conn||!conn.open){
     showNotif('Not connected','Connect to a receiver first',''); return;
   }
+
+  // Flash ring on the video preview
+  const ring=document.getElementById('touchFlashRing');
+  if(ring){ ring.style.opacity='1'; setTimeout(()=>ring.style.opacity='0',400); }
+
+  // White flash overlay
   const fl=document.getElementById('flash');
-  fl.style.transition='none'; fl.style.opacity='0.9';
+  fl.style.transition='none'; fl.style.opacity='0.85';
   setTimeout(()=>{fl.style.transition='opacity .4s';fl.style.opacity='0';},80);
 
-  // Capture from a hidden video element in touch mode
+  // Capture from the visible touch video — works on iOS because video is in DOM and playing
   const vid=document.getElementById('touchVideo');
-  if(vid&&vid.videoWidth&&vid.videoHeight){
+  if(vid && vid.videoWidth && vid.videoHeight){
     const canvas=document.createElement('canvas');
     canvas.width=Math.min(vid.videoWidth,480);
     canvas.height=Math.min(vid.videoHeight,360);
     const ctx=canvas.getContext('2d');
+    // Mirror correction: if front cam, video is visually flipped by CSS scaleX(-1)
+    // so we flip canvas too for natural orientation
+    if(touchFacingMode==='user'){
+      ctx.translate(canvas.width,0);
+      ctx.scale(-1,1);
+    }
     ctx.drawImage(vid,0,0,canvas.width,canvas.height);
     sendImageData(canvas.toDataURL('image/jpeg',0.5).split(',')[1]);
   } else {
-    // No camera available — send a placeholder confirmation
+    // Camera unavailable — send ping without image
+    diag('Touch send: no video frame, sending ping','#ffb800');
     sendImageData(null);
   }
 
@@ -1043,17 +1089,56 @@ function sendImageData(b64){
   showSendAnim();
 }
 
-// Hidden video for touch mode camera capture
+// ── TOUCH MODE CAMERA ────────────────────────────────────────────────
+// Uses a real visible video element — required for iOS Safari to grant
+// camera permission and render frames capturable via canvas.
+let touchFacingMode = 'user';
+let touchStream = null;
+
 async function startTouchCamera(){
-  if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia) return;
-  try{
-    let vid=document.getElementById('touchVideo');
-    if(!vid){ vid=document.createElement('video'); vid.id='touchVideo'; vid.muted=true; vid.playsinline=true; vid.style.display='none'; document.body.appendChild(vid); }
-    const stream=await navigator.mediaDevices.getUserMedia({video:true,audio:false});
-    vid.srcObject=stream;
-    vid.onloadedmetadata=async()=>{ try{await vid.play();}catch(e){} };
-    diag('Touch camera ready','#00ff88');
-  }catch(e){ diag('Touch camera unavailable: '+e.message,'#ffb800'); }
+  const vid = document.getElementById('touchVideo');
+  const noCam = document.getElementById('touchNoCam');
+  if(touchStream){ touchStream.getTracks().forEach(t=>t.stop()); touchStream=null; }
+  if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){
+    noCam.style.display='flex'; diag('Touch camera — no API','#ffb800'); return;
+  }
+  const attempts=[
+    {video:{facingMode:{exact:touchFacingMode}},audio:false},
+    {video:{facingMode:{ideal:touchFacingMode}},audio:false},
+    {video:true,audio:false}
+  ];
+  let stream=null;
+  for(const c of attempts){
+    try{ stream=await navigator.mediaDevices.getUserMedia(c); break; }
+    catch(e){ diag('Touch cam constraint failed: '+e.message,'#ffb800'); }
+  }
+  if(!stream){ noCam.style.display='flex'; diag('Touch camera failed','#ff3c5a'); return; }
+  touchStream=stream;
+  noCam.style.display='none';
+  vid.style.transform=touchFacingMode==='user'?'scaleX(-1)':'scaleX(1)';
+  vid.srcObject=stream;
+  await new Promise((res,rej)=>{
+    vid.onloadedmetadata=async()=>{
+      try{ await vid.play(); res(); }
+      catch(e){ setTimeout(async()=>{ try{await vid.play();res();}catch(e2){rej(e2);} },300); }
+    };
+    vid.onerror=rej;
+  });
+  // Watch for iOS track death
+  stream.getVideoTracks().forEach(track=>{
+    track.addEventListener('ended',()=>{ diag('Touch cam ended — restarting','#ff3c5a'); startTouchCamera(); });
+    track.addEventListener('mute', ()=>{ setTimeout(startTouchCamera,2000); });
+  });
+  diag('Touch camera ready ('+touchFacingMode+')','#00ff88');
+}
+
+async function flipTouchCamera(){
+  touchFacingMode=touchFacingMode==='user'?'environment':'user';
+  const btn=document.getElementById('btnFlipCamTouch');
+  btn.disabled=true;
+  btn.textContent=touchFacingMode==='user'?'🔄':'📷';
+  await startTouchCamera();
+  btn.disabled=false;
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -1073,6 +1158,7 @@ function goToActiveScreen(){
 function disconnect(){
   loopGen++;
   if(mpCamera){try{mpCamera.stop();}catch(e){} mpCamera=null;}
+  if(touchStream){touchStream.getTracks().forEach(t=>t.stop()); touchStream=null;}
   if(conn){try{conn.close();}catch(e){} conn=null;}
   if(peer){try{peer.destroy();}catch(e){} peer=null;}
   showScreen('welcomeScreen');
